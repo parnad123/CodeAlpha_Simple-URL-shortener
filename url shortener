@@ -1,0 +1,98 @@
+import string
+import random
+import sqlite3
+from flask import Flask, render_template, request, redirect, flash, url_for
+
+app = Flask(__name__)
+app.secret_key = "super-secret-key-for-flash-messages"
+DB_FILE = "urls.db"
+
+
+def init_db():
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS url_mapping (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                long_url TEXT NOT NULL,
+                short_code TEXT NOT NULL UNIQUE
+            )
+        """
+        )
+        conn.commit()
+
+
+def generate_short_code(length=6):
+    """Generates a random 6-character alphanumeric string."""
+    characters = string.ascii_letters + string.digits
+    return "".join(random.choice(characters) for _ in range(length))
+
+
+@app.route("/", methods=["GET", "POST"])
+def home():
+    short_url = None
+
+    if request.method == "POST":
+        long_url = request.form.get("long_url").strip()
+
+        if not long_url:
+            flash("Please enter a valid URL!")
+            return redirect(url_for("home"))
+        if not long_url.startswith(("http://", "https://")):
+            long_url = "https://" + long_url
+
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+
+            # Check if the URL was already shortened before
+            cursor.execute(
+                "SELECT short_code FROM url_mapping WHERE long_url = ?",
+                (long_url,),
+            )
+            result = cursor.fetchone()
+
+            if result:
+                short_code = result[0]
+            else:
+                while True:
+                    short_code = generate_short_code()
+                    cursor.execute(
+                        "SELECT 1 FROM url_mapping WHERE short_code = ?",
+                        (short_code,),
+                    )
+                    if not cursor.fetchone():
+                        break
+
+                cursor.execute(
+                    "INSERT INTO url_mapping (long_url, short_code) VALUES (?, ?)",
+                    (long_url, short_code),
+                )
+                conn.commit()
+
+        # Build the final shortened URL string
+        short_url = request.host_url + short_code
+
+    return render_template("index.html", short_url=short_url)
+
+
+@app.route("/<short_code>")
+def redirect_to_url(short_code):
+    """Redirects the short code to the original long URL."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT long_url FROM url_mapping WHERE short_code = ?",
+            (short_code,),
+        )
+        result = cursor.fetchone()
+
+    if result:
+        return redirect(result[0])
+    else:
+        return "<h3>Error: URL not found or has expired.</h3>", 404
+
+
+if __name__ == "__main__":
+    init_db()  
+    app.run(debug=True)
